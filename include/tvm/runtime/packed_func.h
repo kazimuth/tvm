@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <type_traits>
+#include <initializer_list>
 #include "c_runtime_api.h"
 #include "module.h"
 #include "ndarray.h"
@@ -42,9 +43,70 @@ class TVMArgValue;
 class TVMRetValue;
 class TVMArgsSetter;
 
+
+// Tools for converting compile-time type information into run-time packed type annotations
+// TODO: some types accept multiple types to be passed in (e.g. kStr, kBytes, kTVMType can all be converted to std::string; how to model this?)
+//   - map to TVMTypeCodes and include a conversion listing
+//   - make a new enum of c++ types which map to sets of k types
+//   - return k types directly
+// TODO: currently this always sets bits to 64 and lanes to 1, is this correct?
+// TODO: how to handle extension types?
+template<typename ArgType>
+class GetTypeCode {
+    public:
+    // TODO: "unknown"; is this a good choice?
+    constexpr static const uint8_t type_code = 255;
+};
+
+#define TYPE_MAP(compile_type_, type_code_)              \
+    template<> class GetTypeCode<compile_type_> {                 \
+        public:                                                     \
+        constexpr static const uint8_t type_code = type_code_;    \
+    }
+TYPE_MAP(int,  kDLInt);
+TYPE_MAP(int64_t, kDLInt);
+TYPE_MAP(uint64_t, kDLUInt);
+TYPE_MAP(bool, kDLUInt);
+TYPE_MAP(double, kDLFloat);
+TYPE_MAP(DLTensor*, kArrayHandle);
+TYPE_MAP(NDArray, kNDArrayContainer);
+TYPE_MAP(TVMType, kTVMType);
+TYPE_MAP(TVMContext, kTVMContext);
+TYPE_MAP(void*, kNull);
+TYPE_MAP(std::string, kStr);
+TYPE_MAP(NodePtr<Node>, kNodeHandle);
+#undef TYPE_MAP
+class TVMTypeCodeList {
+    std::string members_;
+
+    public:
+    TVMTypeCodeList() : members_() {}
+
+    TVMTypeCodeList(std::string members) : members_(members) {}
+};
+template<typename Arg>
+inline std::string _fold_type_codes() {
+    std::string result;
+    result.push_back(GetTypeCode<Arg>::value);
+    return result;
+}
+template<typename Arg, typename ...Args>
+inline std::string _fold_type_codes() {
+    std::string result = _fold_type_codes<Args...>();
+    result.push_back(GetTypeCode<Arg>::value);
+    return result;
+}
+template<typename ...Args>
+inline TVMTypeCodeList get_type_codes() {
+    return TvmTypeCodeList(_fold_type_codes<Args...>());
+}
+
 /*!
  * \brief Packed function is a type-erased function.
  *  The arguments are passed by packed format.
+ *
+ *  Some PackedFuncs carry type information with them;
+ *  this is purely for documentation purposes, and may be incorrect if a PackedFunc is created improperly!
  *
  *  This is an useful unified interface to call generated functions,
  *  It is the unified function function type of TVM.
@@ -80,6 +142,8 @@ class PackedFunc {
    * \param body the internal container of packed function.
    */
   explicit PackedFunc(FType body) : body_(body) {}
+  explicit PackedFunc(FType body, TVMTypeCode ret_type_code, TVMTypeCodeList arg_type_codes) : body_(body), ret_type_code_(ret_type_code), arg_type_codes_(arg_type_codes) {}
+
   /*!
    * \brief Call packed function by directly passing in unpacked format.
    * \param args Arguments to be passed.
@@ -116,6 +180,14 @@ class PackedFunc {
  private:
   /*! \brief internal container of packed function */
   FType body_;
+
+  // TODO setters
+  /*! \brief whether the packed function knows its own type */
+  bool knows_type_; 
+  /*! \brief type return type, if known */
+  TVMTypeCode ret_type_code_;
+  /*! \brief the argument type codes as a string of bytes */
+  TVMTypeCodeList arg_type_codes_;
 };
 
 /*!
@@ -182,17 +254,17 @@ class TypedPackedFunc<R(Args...)> {
    *
    * \param packed The packed function
    */
-  inline TypedPackedFunc(PackedFunc packed);  // NOLINT(*)
+  //inline TypedPackedFunc(PackedFunc packed);  // NOLINT(*)
   /*!
    * \brief constructor from TVMRetValue
    * \param value The TVMRetValue
    */
-  inline TypedPackedFunc(const TVMRetValue& value);  // NOLINT(*)
+  //inline TypedPackedFunc(const TVMRetValue& value);  // NOLINT(*)
   /*!
    * \brief constructor from TVMArgValue
    * \param value The TVMArgValue
    */
-  inline TypedPackedFunc(const TVMArgValue& value);  // NOLINT(*)
+  //inline TypedPackedFunc(const TVMArgValue& value);  // NOLINT(*)
   /*!
    * \brief construct from a lambda function with the same signature.
    *
@@ -215,6 +287,7 @@ class TypedPackedFunc<R(Args...)> {
                                  >::value>::type>
   TypedPackedFunc(const FLambda& typed_lambda) {  // NOLINT(*)
     this->AssignTypedLambda(typed_lambda);
+    auto q = get_type_codes<Args...>();
   }
   /*!
    * \brief copy assignment operator from typed lambda
@@ -1181,17 +1254,17 @@ struct typed_packed_call_dispatcher<void> {
 };
 }  // namespace detail
 
-template<typename R, typename ...Args>
-TypedPackedFunc<R(Args...)>::TypedPackedFunc(PackedFunc packed)
-  : packed_(packed) {}
+//template<typename R, typename ...Args>
+//TypedPackedFunc<R(Args...)>::TypedPackedFunc(PackedFunc packed)
+//  : packed_(packed) {}
 
-template<typename R, typename ...Args>
-TypedPackedFunc<R(Args...)>::TypedPackedFunc(const TVMRetValue& value)
-    : packed_(value.operator PackedFunc()) {}
-
-template<typename R, typename ...Args>
-TypedPackedFunc<R(Args...)>::TypedPackedFunc(const TVMArgValue& value)
-    : packed_(value.operator PackedFunc()) {}
+//template<typename R, typename ...Args>
+//TypedPackedFunc<R(Args...)>::TypedPackedFunc(const TVMRetValue& value)
+//    : packed_(value.operator PackedFunc()) {}
+//
+//template<typename R, typename ...Args>
+//TypedPackedFunc<R(Args...)>::TypedPackedFunc(const TVMArgValue& value)
+//    : packed_(value.operator PackedFunc()) {}
 
 template<typename R, typename ...Args>
 template<typename FType>
